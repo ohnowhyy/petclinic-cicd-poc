@@ -1,0 +1,94 @@
+name: pipeline
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  commit-stage:                      # R3: result within 10 minutes
+    name: commit-stage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+        with: { fetch-depth: 0 }     # full history, so that new code can be told from old
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: '17', cache: maven }
+
+      - name: Build and unit tests
+        run: ./mvnw -B verify -Dtest='*Tests,*Test,!*IntegrationTests'
+
+      - name: Code analysis and quality gate (SonarQube Cloud)
+        if: ${{ env.SONAR_TOKEN != '' }}          # skipped until the token exists
+        run: >
+          ./mvnw -B org.sonarsource.scanner.maven:sonar-maven-plugin:sonar
+          -Dsonar.host.url=https://sonarcloud.io
+          -Dsonar.organization=${{ vars.SONAR_ORG }}
+          -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
+          -Dsonar.qualitygate.wait=true
+
+      - name: Install Snyk
+        if: ${{ env.SNYK_TOKEN != '' }}           # skipped until the token exists
+        uses: snyk/actions/setup@master
+      - name: Dependency scan (Snyk)
+        if: ${{ env.SNYK_TOKEN != '' }}
+        run: snyk test --severity-threshold=high
+
+  integration-tests:                 # in parallel; real databases in containers
+    name: integration-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: '17', cache: maven }
+      - name: Integration tests
+        run: ./mvnw -B verify -Dtest='*IntegrationTests'
+
+  package:                           # R2: the image is built once, after the merge
+    name: package
+    if: github.event_name == 'push'
+    needs: [commit-stage, integration-tests]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with: { distribution: temurin, java-version: '17', cache: maven }
+
+      - name: Build the application package
+        run: ./mvnw -B package -DskipTests
+
+      - name: Build the Docker image
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA}"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          docker build -t "$IMAGE" .
+
+      - name: Smoke test, the container has to report healthy
+        run: |
+          docker run -d --name app -p 8080:8080 "$IMAGE"
+          for i in $(seq 1 30); do
+            if curl -fs localhost:8080/actuator/health | grep -q '"status":"UP"'; then
+              echo "Healthy after about $((i * 4)) seconds"
+              exit 0
+            fi
+            sleep 4
+          done
+          docker logs app
+          exit 1
+
+      - name: Push the image to the registry
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker push "$IMAGE"
+          echo "Pushed \`$IMAGE\`" >> "$GITHUB_STEP_SUMMARY"
