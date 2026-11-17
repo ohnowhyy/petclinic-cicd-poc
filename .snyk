@@ -1,0 +1,11 @@
+# Snyk policy file: documented, time-limited exceptions to the dependency scan.
+version: v1.25.0
+ignore:
+  SNYK-JAVA-ORGGLASSFISHJAXB-20883142:
+    - '*':
+        reason: >-
+          No fixed version of jaxb-core has been published. The library
+          arrives through Hibernate and cannot be upgraded separately.
+          Accepted for 30 days, then to be reviewed again.
+        expires: 2026-12-17T00:00:00.000Z
+patch: {}
