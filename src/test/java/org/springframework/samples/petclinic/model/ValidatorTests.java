@@ -41,7 +41,7 @@ class ValidatorTests {
 	}
 
 	private <T> ConstraintViolation<T> getOnlyViolation(Set<ConstraintViolation<T>> violations) {
-		assertThat(violations).hasSize(1);
+		assertThat(violations).hasSize(2);
 		return violations.iterator().next();
 	}
 
