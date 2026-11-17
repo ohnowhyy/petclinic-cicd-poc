@@ -1,0 +1,22 @@
+{
+  "institutions": [
+    { "name": "Sample Institution 1", "pilot": true,
+      "sensitive_periods": [
+        { "from": "2027-01-18", "to": "2027-02-12", "reason": "assessment" } ] },
+    { "name": "Sample Institution 2", "pilot": true,
+      "sensitive_periods": [
+        { "from": "2026-11-09", "to": "2026-12-11", "reason": "registration" } ] },
+    { "name": "Sample Institution 3", "pilot": false,
+      "sensitive_periods": [
+        { "from": "2026-11-02", "to": "2026-12-18", "reason": "assessment" } ] },
+    { "name": "Sample Institution 4", "pilot": false,
+      "sensitive_periods": [
+        { "from": "2026-12-21", "to": "2027-01-08", "reason": "results" } ] },
+    { "name": "Sample Institution 5", "pilot": false,
+      "sensitive_periods": [
+        { "from": "2026-10-05", "to": "2026-10-23", "reason": "registration" } ] },
+    { "name": "Sample Institution 6", "pilot": false,
+      "sensitive_periods": [
+        { "from": "2026-11-16", "to": "2026-12-04", "reason": "registration" } ] }
+  ]
+}
