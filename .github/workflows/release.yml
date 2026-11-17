@@ -1,0 +1,65 @@
+name: release
+
+# Stage 6 of the design: a release is separate from a deployment.
+# This proof of concept does not call a flag service. It decides, from the
+# calendar in the repository, for which institutions the flag may be switched on today.
+
+on:
+  workflow_dispatch:
+    inputs:
+      flag:
+        description: Feature flag to switch on
+        type: string
+        required: true
+      group:
+        description: Who receives it
+        type: choice
+        options: [pilots, all]
+        default: pilots
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: release
+    runs-on: ubuntu-24.04
+    environment: release             # required reviewer: the product owner
+    env:
+      FLAG: ${{ inputs.flag }}
+      GROUP: ${{ inputs.group }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Switch the flag on outside sensitive periods
+        run: |
+          python3 - <<'PY'
+          import datetime, json, os
+
+          flag, group = os.environ["FLAG"], os.environ["GROUP"]
+          today = datetime.date.today()
+          with open("calendar/sensitive-periods.json") as f:
+              calendar = json.load(f)
+
+          rows = []
+          for inst in calendar["institutions"]:
+              if group == "pilots" and not inst.get("pilot"):
+                  continue
+              frozen = [p for p in inst["sensitive_periods"]
+                        if datetime.date.fromisoformat(p["from"]) <= today
+                        <= datetime.date.fromisoformat(p["to"])]
+              if frozen:
+                  p = frozen[0]
+                  rows.append((inst["name"], "waits", f'{p["reason"]} until {p["to"]}'))
+              else:
+                  rows.append((inst["name"], "switched on", ""))
+
+          lines = [f"## Release of `{flag}` to {group} on {today}", "",
+                   "| Institution | Flag | Reason |", "|---|---|---|"]
+          lines += [f"| {n} | {s} | {r} |" for n, s, r in rows]
+          on = sum(1 for _, s, _ in rows if s == "switched on")
+          lines += ["", f"{on} of {len(rows)} institutions receive the feature today."]
+          text = "\n".join(lines)
+          print(text)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write(text + "\n")
+          PY
