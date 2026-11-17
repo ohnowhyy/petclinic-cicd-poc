@@ -1,0 +1,3 @@
+# Changes to the database scripts cannot merge without this reviewer.
+# In the case study this is the data protection officer.
+/src/main/resources/db/ @ohnowhyy
