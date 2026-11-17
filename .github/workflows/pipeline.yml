@@ -72,7 +72,7 @@ jobs:
         run: |
           IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA}"
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
-          docker build -t "$IMAGE" .
+          docker build --label org.opencontainers.image.revision="$GITHUB_SHA" -t "$IMAGE" .
 
       - name: Smoke test, the container has to report healthy
         run: |
@@ -92,3 +92,78 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           docker push "$IMAGE"
           echo "Pushed \`$IMAGE\`" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-staging:                    # stages 3 to 5 in small: deploy, check, roll back
+    name: deploy-staging
+    if: github.event_name == 'push'
+    needs: [package]
+    runs-on: ubuntu-24.04
+    environment: staging             # GitHub records every deployment (R5)
+    permissions:
+      contents: read
+      packages: write
+    services:
+      postgres:                      # stands in for the production database
+        image: postgres:18.4
+        env:
+          POSTGRES_DB: petclinic
+          POSTGRES_USER: petclinic
+          POSTGRES_PASSWORD: staging-db-password   # sample value; a real one would be a secret
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U petclinic" --health-interval 5s --health-retries 10
+    env:
+      DB_PASS: staging-db-password
+    steps:
+      - name: Log in to the registry
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Name the images
+        run: |
+          REPO="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "IMAGE=$REPO:$GITHUB_SHA" >> "$GITHUB_ENV"
+          echo "STABLE=$REPO:stable" >> "$GITHUB_ENV"
+
+      - name: Deploy the new version
+        id: deploy
+        run: |
+          start_and_check() {
+            docker rm -f app >/dev/null 2>&1 || true
+            docker run -d --name app --network host \
+              -e SPRING_PROFILES_ACTIVE=postgres \
+              -e POSTGRES_URL=jdbc:postgresql://localhost:5432/petclinic \
+              -e POSTGRES_USER=petclinic -e POSTGRES_PASS="$DB_PASS" "$1"
+            for i in $(seq 1 30); do
+              if curl -fs localhost:8080/actuator/health | grep -q '"status":"UP"'; then
+                curl -fsL "localhost:8080/owners?lastName=Franklin" | grep -q "George Franklin" && return 0
+              fi
+              sleep 4
+            done
+            return 1
+          }
+          declare -f start_and_check > "$RUNNER_TEMP/deploy.sh"
+          source "$RUNNER_TEMP/deploy.sh"
+          start_and_check "$IMAGE"
+          echo "The new version ${GITHUB_SHA::7} passed the health check and the smoke test."
+
+      - name: Mark the version as stable
+        run: |
+          docker tag "$IMAGE" "$STABLE"
+          docker push "$STABLE"
+          echo "Deployed \`${GITHUB_SHA::7}\` to staging. It is now the stable version." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Roll back to the last stable version
+        if: failure() && steps.deploy.outcome == 'failure'
+        run: |
+          echo "Last lines of the failed version's log:"
+          docker logs app 2>&1 | grep -iE "error|fatal|exception" | tail -n 5 || true
+          source "$RUNNER_TEMP/deploy.sh"
+          docker pull "$STABLE"
+          start_and_check "$STABLE"
+          OLD=$(docker inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$STABLE")
+          {
+            echo "Deployment of \`${GITHUB_SHA::7}\` failed the health check."
+            echo ""
+            echo "Rolled back to the stable version \`${OLD::7}\`, which passed the health check and the smoke test."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Rolled back to ${OLD::7}."
