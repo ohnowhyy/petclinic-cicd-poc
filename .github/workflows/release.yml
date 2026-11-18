@@ -1,8 +1,9 @@
 name: release
 
 # Stage 6 of the design: a release is separate from a deployment.
-# This proof of concept does not call a flag service. It decides, from the
-# calendar in the repository, for which institutions the flag may be switched on today.
+# The workflow decides, from the calendar in the repository, for which institutions
+# the flag may be switched on today, writes that decision into a flag file, and asks
+# the current stable version of the application what each institution now sees.
 
 on:
   workflow_dispatch:
@@ -19,6 +20,7 @@ on:
 
 permissions:
   contents: read
+  packages: read
 
 jobs:
   release:
@@ -30,7 +32,7 @@ jobs:
       GROUP: ${{ inputs.group }}
     steps:
       - uses: actions/checkout@v6
-      - name: Switch the flag on outside sensitive periods
+      - name: Decide per institution from the calendar
         run: |
           python3 - <<'PY'
           import datetime, json, os
@@ -62,4 +64,36 @@ jobs:
           print(text)
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
               f.write(text + "\n")
+          with open("flags.properties", "w") as f:
+              f.write(flag + "=" + ", ".join(n for n, st, _ in rows if st == "switched on") + "\n")
+          with open("institutions.txt", "w") as f:
+              f.write("\n".join(n for n, _, _ in rows) + "\n")
           PY
+
+      - name: Switch the flag in the running application
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          STABLE="ghcr.io/${GITHUB_REPOSITORY,,}:stable"
+          docker run -d --name app -p 8080:8080 \
+            -v "$PWD/flags.properties:/flags/flags.properties:ro" \
+            -e FLAGS_FILE=/flags/flags.properties "$STABLE"
+          for i in $(seq 1 30); do
+            curl -fs localhost:8080/actuator/health | grep -q '"status":"UP"' && break
+            sleep 4
+          done
+          VERSION=$(docker inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$STABLE")
+          echo "Flag file written by this release:"
+          cat flags.properties
+          {
+            echo ""
+            echo "## What the running application answers"
+            echo ""
+            echo "Stable version \`${VERSION::7}\`, asked once per institution whether \`$FLAG\` is on."
+            echo ""
+            echo "| Institution | Answer of the application |"
+            echo "|---|---|"
+            while IFS= read -r name; do
+              answer=$(curl -fs -H "X-Institution: $name" "localhost:8080/flags/$FLAG")
+              echo "| $name | $answer |"
+            done < institutions.txt
+          } >> "$GITHUB_STEP_SUMMARY"
